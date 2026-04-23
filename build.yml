@@ -1,0 +1,103 @@
+name: Build AROG VPN
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows x64 (MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract source ZIP if present
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Filter "*.zip" -File | Select-Object -First 1
+          if ($zip) {
+            Write-Host "ZIP bulundu: $($zip.Name), cikartiliyor..."
+            Expand-Archive -Path $zip.FullName -DestinationPath "extracted_zip" -Force
+            $cmake = Get-ChildItem -Path "extracted_zip" -Recurse -Filter "CMakeLists.txt" | Select-Object -First 1
+            if ($cmake) {
+              $sourceDir = $cmake.DirectoryName
+              Write-Host "Kaynak dizin bulundu: $sourceDir"
+              Get-ChildItem $sourceDir | Move-Item -Destination . -Force
+              Write-Host "Dosyalar root'a tasindi."
+            } else {
+              Write-Error "CMakeLists.txt ZIP icinde bulunamadi!"
+              exit 1
+            }
+            Remove-Item "extracted_zip" -Recurse -Force
+          } else {
+            Write-Host "ZIP bulunamadi, kaynak kodlar zaten mevcut."
+          }
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Gather output files
+        run: |
+          mkdir release_output
+          copy build\Release\AROG_VPN.exe release_output\AROG_VPN.exe
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AROG_VPN-Windows-x64
+          path: release_output\
+          retention-days: 30
+
+  release:
+    name: Create GitHub Release
+    needs: build-windows
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AROG_VPN-Windows-x64
+          path: release_output
+
+      - name: Zip release files
+        run: |
+          cd release_output
+          zip -r ../AROG_VPN-Windows-x64.zip .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: A.R.O.G VPN v1.0.0
+          body: |
+            ## A.R.O.G VPN v1.0.0
+            Windows x64 build — GitHub Actions ile otomatik derlendi.
+            ### İndirme
+            `AROG_VPN-Windows-x64.zip` dosyasını indir, içinden `AROG_VPN.exe` çalıştır.
+            ### Gereksinim
+            - Windows 10/11
+            - [WireGuard](https://www.wireguard.com/install/) yüklü olmalı
+          files: AROG_VPN-Windows-x64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
